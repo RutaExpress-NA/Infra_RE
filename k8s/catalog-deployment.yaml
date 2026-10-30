@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rutaexpress-catalog
+  namespace: rutaexpress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rutaexpress-catalog
+  template:
+    metadata:
+      labels:
+        app: rutaexpress-catalog
+    spec:
+      containers:
+        - name: catalog
+          image: 485970811285.dkr.ecr.us-east-1.amazonaws.com/rutaexpress-catalog:v1
+          ports:
+            - containerPort: 8083
+          env:
+            - name: DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rutaexpress-secrets
+                  key: DB_URL_CATALOG
+            - name: DB_DRIVER
+              value: "org.postgresql.Driver"
+            - name: DB_DIALECT
+              value: "org.hibernate.dialect.PostgreSQLDialect"
+            - name: DB_USERNAME
+              value: "rutaexpress_admin"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rutaexpress-secrets
+                  key: DB_PASSWORD
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rutaexpress-catalog
+  namespace: rutaexpress
+spec:
+  selector:
+    app: rutaexpress-catalog
+  ports:
+    - port: 8083
+      targetPort: 8083
+  type: ClusterIP

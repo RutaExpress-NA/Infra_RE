@@ -1,0 +1,174 @@
+{
+  "info": {
+    "_postman_id": "4bca3d8f-05e8-4aa3-95f4-4d80e2826d25",
+    "name": "RutaExpress - Pruebas locales",
+    "description": "Coleccion basada en PRUEBAS.md. Ejecutar en orden: Catalogo, Shipments directo, Notify, Documentos PDF, RabbitMQ Admin, BFF. Requiere servicios locales en puertos 8081, 8082, 8083 y 8085; RabbitMQ y un token Admin son requisitos adicionales. Las peticiones crean datos y las pruebas RabbitMQ crean/eliminan recursos demo. Variables editables: baseCatalog, baseShipments, baseNotify, baseBff, adminToken y shipmentId.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseBff", "value": "http://localhost:8081" },
+    { "key": "baseShipments", "value": "http://localhost:8082" },
+    { "key": "baseCatalog", "value": "http://localhost:8083" },
+    { "key": "baseNotify", "value": "http://localhost:8085" },
+    { "key": "adminToken", "value": "" },
+    { "key": "shipmentId", "value": "1" },
+    { "key": "trackingCode", "value": "RE-2026-TEST0001" },
+    { "key": "bffShipmentId", "value": "2" }
+  ],
+  "item": [
+    {
+      "name": "0 - Catalogo (ejecutar primero)",
+      "item": [
+        {
+          "name": "POST Crear servicio",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"name\":\"Envio Express 24h\",\"description\":\"Entrega en menos de 24 horas\",\"price\":5990,\"active\":true,\"vehicleTypeRequired\":\"MOTO\",\"popular\":true,\"weightLimitKg\":5,\"etaWindowLabel\":\"24h\",\"slaPercent\":98,\"coverageCities\":[\"Santiago\",\"Providencia\"],\"features\":[\"Rastreo en tiempo real\",\"Firma digital\"]}" },
+            "url": "{{baseCatalog}}/api/catalog/services",
+            "description": "Esperado: 201. La guia espera que el nuevo servicio tenga id 1."
+          }
+        },
+        {
+          "name": "POST Crear flota MOTO",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"vehicleType\":\"MOTO\",\"totalCapacity\":20,\"currentAvailable\":20}" },
+            "url": "{{baseCatalog}}/api/catalog/fleet-capacity",
+            "description": "Esperado: 201."
+          }
+        },
+        {
+          "name": "GET Listar servicios",
+          "request": { "method": "GET", "url": "{{baseCatalog}}/api/catalog/services" },
+          "description": "Esperado: 200 con el servicio creado."
+        },
+        {
+          "name": "GET Listar flota",
+          "request": { "method": "GET", "url": "{{baseCatalog}}/api/catalog/fleet-capacity" },
+          "description": "Esperado: 200 con currentAvailable=20 antes de aceptar un envio."
+        }
+      ]
+    },
+    {
+      "name": "1 - Shipments directo (ejecutar en orden)",
+      "item": [
+        {
+          "name": "1 POST Crear envio",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["if (pm.response.code === 201) { var body = pm.response.json(); pm.collectionVariables.set('shipmentId', body.id); if (body.trackingCode) pm.collectionVariables.set('trackingCode', body.trackingCode); }"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"serviceId\":\"1\",\"createdByUserId\":\"test\",\"recipient\":{\"name\":\"Juan Perez\",\"email\":\"juan@example.com\",\"phone\":\"+56912345678\",\"address\":\"Av. Providencia 1234, depto 56\",\"city\":\"Providencia, Santiago\"},\"weightKg\":4.5}" },
+            "url": "{{baseShipments}}/api/shipments",
+            "description": "Esperado: 201, status CREADO; captura id y trackingCode para las siguientes peticiones."
+          }
+        },
+        { "name": "2 GET Listar envios", "request": { "method": "GET", "url": "{{baseShipments}}/api/shipments" }, "description": "Esperado: 200." },
+        { "name": "3 GET Obtener envio e historial", "request": { "method": "GET", "url": "{{baseShipments}}/api/shipments/{{shipmentId}}" }, "description": "Esperado: 200 con historial." },
+        {
+          "name": "4 PUT Estado ACEPTADO",
+          "request": { "method": "PUT", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"nuevoStatus\":\"ACEPTADO\",\"byUserId\":\"test\"}" }, "url": "{{baseShipments}}/api/shipments/{{shipmentId}}/status" },
+          "description": "Esperado: 200. Notificaciones EMAIL/BODEGA/ETIQUETA; dos PDF; capacidad MOTO disminuye."
+        },
+        {
+          "name": "5 PUT Salto invalido a ENTREGADO",
+          "request": { "method": "PUT", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"nuevoStatus\":\"ENTREGADO\",\"byUserId\":\"test\"}" }, "url": "{{baseShipments}}/api/shipments/{{shipmentId}}/status" },
+          "description": "Esperado: 409 con mensaje No se puede pasar de ACEPTADO a ENTREGADO."
+        },
+        {
+          "name": "6 PUT Estado EN_BODEGA",
+          "request": { "method": "PUT", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"nuevoStatus\":\"EN_BODEGA\",\"byUserId\":\"test\"}" }, "url": "{{baseShipments}}/api/shipments/{{shipmentId}}/status" },
+          "description": "Esperado: 200."
+        },
+        {
+          "name": "7 PUT Estado EN_RUTA",
+          "request": { "method": "PUT", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"nuevoStatus\":\"EN_RUTA\",\"byUserId\":\"test\"}" }, "url": "{{baseShipments}}/api/shipments/{{shipmentId}}/status" },
+          "description": "Esperado: 200."
+        },
+        {
+          "name": "8 PUT Estado ENTREGADO",
+          "request": { "method": "PUT", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"nuevoStatus\":\"ENTREGADO\",\"byUserId\":\"test\"}" }, "url": "{{baseShipments}}/api/shipments/{{shipmentId}}/status" },
+          "description": "Esperado: 200; la capacidad MOTO vuelve a aumentar."
+        },
+        { "name": "9 GET Filtrar por estado", "request": { "method": "GET", "url": "{{baseShipments}}/api/shipments?status=ENTREGADO" }, "description": "Esperado: 200 con el envio entregado." }
+      ]
+    },
+    {
+      "name": "2 - Notify",
+      "item": [
+        { "name": "GET Health", "request": { "method": "GET", "url": "{{baseNotify}}/api/notify/health" }, "description": "Esperado: 200." },
+        {
+          "name": "POST Evento ACEPTADO",
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"shipmentId\":1,\"trackingCode\":\"RE-2026-TEST0001\",\"newStatus\":\"ACEPTADO\",\"recipientName\":\"Juan Perez\",\"recipientEmail\":\"juan@example.com\",\"deliveryAddress\":\"Av. Providencia 1234, depto 56\",\"deliveryCity\":\"Providencia, Santiago\",\"serviceName\":\"Envio Express 24h\",\"weightKg\":2.4}" }, "url": "{{baseNotify}}/api/notify/events" },
+          "description": "Esperado: 202 con ACK EMAIL/BODEGA/ETIQUETA y generacion de dos PDF."
+        },
+        {
+          "name": "POST Evento EN_RUTA",
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"shipmentId\":1,\"trackingCode\":\"RE-2026-TEST0002\",\"newStatus\":\"EN_RUTA\",\"recipientName\":\"Juan Perez\",\"recipientEmail\":\"juan@example.com\",\"deliveryAddress\":\"Av. Providencia 1234, depto 56\",\"deliveryCity\":\"Providencia, Santiago\",\"serviceName\":\"Envio Express 24h\",\"weightKg\":2.4}" }, "url": "{{baseNotify}}/api/notify/events" },
+          "description": "Esperado: 202; solo EMAIL."
+        },
+        {
+          "name": "POST Evento con fallo temporal FAIL-001",
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"shipmentId\":2,\"trackingCode\":\"FAIL-001\",\"newStatus\":\"EN_RUTA\",\"recipientName\":\"Maria Soto\",\"recipientEmail\":\"maria@example.com\",\"deliveryAddress\":\"Av. Providencia 1234, depto 56\",\"deliveryCity\":\"Providencia, Santiago\",\"serviceName\":\"Envio Express 24h\",\"weightKg\":2.4}" }, "url": "{{baseNotify}}/api/notify/events" },
+          "description": "Esperado: 202; verificar tres reintentos y NACK a DLQ de email."
+        },
+        {
+          "name": "POST Evento con email invalido",
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"shipmentId\":3,\"trackingCode\":\"RE-2026-TEST0003\",\"newStatus\":\"EN_RUTA\",\"recipientName\":\"Pedro Diaz\",\"recipientEmail\":\"sin-arroba\",\"deliveryAddress\":\"Av. Providencia 1234, depto 56\",\"deliveryCity\":\"Providencia, Santiago\",\"serviceName\":\"Envio Express 24h\",\"weightKg\":2.4}" }, "url": "{{baseNotify}}/api/notify/events" },
+          "description": "Esperado: 202; NACK a DLQ sin reintentos."
+        },
+        {
+          "name": "POST Evento incompleto",
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"shipmentId\":1}" }, "url": "{{baseNotify}}/api/notify/events" },
+          "description": "Esperado: 400 con detalle de validacion."
+        }
+      ]
+    },
+    {
+      "name": "2b - Documentos PDF (despues del evento ACEPTADO)",
+      "item": [
+        { "name": "GET Descargar etiqueta PDF", "request": { "method": "GET", "url": "{{baseNotify}}/api/notify/documents/RE-2026-TEST0001/label" }, "description": "Esperado: 200 application/pdf." },
+        { "name": "GET Descargar picking PDF", "request": { "method": "GET", "url": "{{baseNotify}}/api/notify/documents/RE-2026-TEST0001/picking" }, "description": "Esperado: 200 application/pdf." },
+        { "name": "GET Documento inexistente", "request": { "method": "GET", "url": "{{baseNotify}}/api/notify/documents/NO-EXISTE/label" }, "description": "Esperado: 404." },
+        { "name": "GET Tipo de documento invalido", "request": { "method": "GET", "url": "{{baseNotify}}/api/notify/documents/RE-2026-TEST0001/guia" }, "description": "Esperado: 400; type debe ser label o picking." }
+      ]
+    },
+    {
+      "name": "3 - RabbitMQ Admin (crea y elimina recursos demo)",
+      "item": [
+        { "name": "1 POST Crear cola con DLX", "event": [{ "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["var suffix = Date.now().toString(36);", "pm.collectionVariables.set('demoQueue', 'q.demo.facturas.' + suffix);", "pm.collectionVariables.set('demoExchange', 'ex.demo.' + suffix);"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"name\":\"{{demoQueue}}\",\"deadLetterExchange\":\"rutaexpress.dlx\",\"deadLetterRoutingKey\":\"dlq.demo\"}" }, "url": "{{baseNotify}}/api/rabbit-admin/queues" }, "description": "Esperado: 201. Genera nombres unicos para permitir repetir la coleccion sin colisiones." },
+        { "name": "2 POST Cola duplicada", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"name\":\"{{demoQueue}}\",\"deadLetterExchange\":\"rutaexpress.dlx\",\"deadLetterRoutingKey\":\"dlq.demo\"}" }, "url": "{{baseNotify}}/api/rabbit-admin/queues" }, "description": "Esperado: 409 ya existe." },
+        { "name": "3 GET Consultar cola", "request": { "method": "GET", "url": "{{baseNotify}}/api/rabbit-admin/queues/{{demoQueue}}" }, "description": "Esperado: 200 con messages y consumers." },
+        { "name": "4 POST Crear exchange TOPIC", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"name\":\"{{demoExchange}}\",\"type\":\"TOPIC\"}" }, "url": "{{baseNotify}}/api/rabbit-admin/exchanges" }, "description": "Esperado: 201." },
+        { "name": "5 POST Crear binding", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"queue\":\"{{demoQueue}}\",\"exchange\":\"{{demoExchange}}\",\"routingKey\":\"demo.*\"}" }, "url": "{{baseNotify}}/api/rabbit-admin/bindings" }, "description": "Esperado: 201." },
+        { "name": "6 POST Cola con espacios", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"name\":\"cola con espacios\"}" }, "url": "{{baseNotify}}/api/rabbit-admin/queues" }, "description": "Esperado: 400 nombre invalido." },
+        { "name": "7 POST Cola con prefijo reservado", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"name\":\"amq.prueba\"}" }, "url": "{{baseNotify}}/api/rabbit-admin/queues" }, "description": "Esperado: 400 prefijo reservado." },
+        { "name": "8 POST Exchange HEADERS", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"name\":\"ex.x\",\"type\":\"HEADERS\"}" }, "url": "{{baseNotify}}/api/rabbit-admin/exchanges" }, "description": "Esperado: 400 tipo no permitido." },
+        { "name": "9 DELETE Cola protegida", "request": { "method": "DELETE", "url": "{{baseNotify}}/api/rabbit-admin/queues/q.cmd.email" }, "description": "Esperado: 409 protegida." },
+        { "name": "10 DELETE Cola inexistente", "request": { "method": "DELETE", "url": "{{baseNotify}}/api/rabbit-admin/queues/no.existe" }, "description": "Esperado: 404." },
+        { "name": "11 DELETE Binding demo", "request": { "method": "DELETE", "url": "{{baseNotify}}/api/rabbit-admin/bindings?queue={{demoQueue}}&exchange={{demoExchange}}&routingKey=demo.*" }, "description": "Esperado: 204." },
+        { "name": "12 DELETE Cola demo", "request": { "method": "DELETE", "url": "{{baseNotify}}/api/rabbit-admin/queues/{{demoQueue}}" }, "description": "Esperado: 204." },
+        { "name": "13 DELETE Exchange demo", "request": { "method": "DELETE", "url": "{{baseNotify}}/api/rabbit-admin/exchanges/{{demoExchange}}" }, "description": "Esperado: 204." }
+      ]
+    },
+    {
+      "name": "4 - BFF (configurar adminToken)",
+      "item": [
+        { "name": "0 GET whoami Admin", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }], "url": "{{baseBff}}/api/whoami" }, "description": "Esperado: 200 con roles Admin; completar adminToken con un token valido." },
+        { "name": "1 GET Listar envios", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }], "url": "{{baseBff}}/api/shipments" }, "description": "Esperado: 200." },
+        { "name": "2 GET Listar servicios", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }], "url": "{{baseBff}}/api/catalog/services" }, "description": "Esperado: 200." },
+        {
+          "name": "3 POST Crear envio sin createdByUserId",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["if (pm.response.code === 201) { var body = pm.response.json(); pm.collectionVariables.set('bffShipmentId', body.id); }"] } }],
+          "request": { "method": "POST", "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"serviceId\":\"1\",\"recipient\":{\"name\":\"Juan Perez\",\"email\":\"juan@example.com\",\"phone\":\"+56912345678\",\"address\":\"Av. Providencia 1234, depto 56\",\"city\":\"Providencia, Santiago\"},\"weightKg\":4.5}" }, "url": "{{baseBff}}/api/shipments" },
+          "description": "Esperado: 201 y captura el id para las siguientes peticiones."
+        },
+        { "name": "4 PUT Estado ACEPTADO", "request": { "method": "PUT", "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"status\":\"ACEPTADO\"}" }, "url": "{{baseBff}}/api/shipments/{{bffShipmentId}}/status" }, "description": "Esperado: 200. El BFF transforma status y agrega byUserId." },
+        { "name": "5 PUT Salto invalido a ENTREGADO", "request": { "method": "PUT", "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"status\":\"ENTREGADO\"}" }, "url": "{{baseBff}}/api/shipments/{{bffShipmentId}}/status" }, "description": "Esperado: 409, no 500." },
+        { "name": "6 GET Listar envios sin token", "request": { "method": "GET", "url": "{{baseBff}}/api/shipments" }, "description": "Esperado: 401." }
+      ]
+    }
+  ]
+}

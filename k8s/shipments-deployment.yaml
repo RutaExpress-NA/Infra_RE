@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rutaexpress-shipments
+  namespace: rutaexpress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rutaexpress-shipments
+  template:
+    metadata:
+      labels:
+        app: rutaexpress-shipments
+    spec:
+      containers:
+        - name: shipments
+          image: 485970811285.dkr.ecr.us-east-1.amazonaws.com/rutaexpress-shipments:v1
+          ports:
+            - containerPort: 8082
+          env:
+            - name: DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rutaexpress-secrets
+                  key: DB_URL_SHIPMENTS
+            - name: DB_DRIVER
+              value: "org.postgresql.Driver"
+            - name: DB_DIALECT
+              value: "org.hibernate.dialect.PostgreSQLDialect"
+            - name: DB_USERNAME
+              value: "rutaexpress_admin"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rutaexpress-secrets
+                  key: DB_PASSWORD
+            - name: CATALOG_SERVICE_URL
+              value: "http://rutaexpress-catalog:8083"
+            - name: NOTIFY_SERVICE_URL
+              value: "http://rutaexpress-notify:8084"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rutaexpress-shipments
+  namespace: rutaexpress
+spec:
+  selector:
+    app: rutaexpress-shipments
+  ports:
+    - port: 8082
+      targetPort: 8082
+  type: ClusterIP

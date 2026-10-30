@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rutaexpress-notify
+  namespace: rutaexpress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rutaexpress-notify
+  template:
+    metadata:
+      labels:
+        app: rutaexpress-notify
+    spec:
+      containers:
+        - name: notify
+          image: {{ECR_URL}}/rutaexpress-notify:v1
+          ports:
+            - containerPort: 8084
+          env:
+            - name: RABBITMQ_ADDRESSES
+              valueFrom:
+                secretKeyRef:
+                  name: rutaexpress-secrets
+                  key: RABBITMQ_ADDRESSES
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: rutaexpress-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rutaexpress-secrets
+                  key: RABBITMQ_PASS
+            # URL base que codifica el QR de la etiqueta. Se ajusta con la URL real del API Gateway:
+            #   kubectl set env deployment/rutaexpress-notify TRACKING_BASE_URL=https://<API_ID>.execute-api.us-east-1.amazonaws.com/shipments/ -n rutaexpress
+            - name: TRACKING_BASE_URL
+              value: "https://pendiente.execute-api.us-east-1.amazonaws.com/shipments/"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "384Mi"
+            limits:
+              cpu: "500m"
+              memory: "768Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rutaexpress-notify
+  namespace: rutaexpress
+spec:
+  selector:
+    app: rutaexpress-notify
+  ports:
+    - port: 8084
+      targetPort: 8084
+  type: ClusterIP

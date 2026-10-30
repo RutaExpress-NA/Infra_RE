@@ -1,0 +1,518 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: RutaExpress - Network + ECR + EKS
+
+Parameters:
+
+  EksClusterRoleName:
+    Type: String
+    Description: Nombre del rol IAM para el cluster EKS
+    Default: LabRole
+
+  EksNodeRoleName:
+    Type: String
+    Description: Nombre del rol IAM para el node group de EKS
+    Default: LabRole
+
+  DBPassword:
+    Type: String
+    Description: Password para las bases de datos PostgreSQL (temporal, se migra a Oracle despues)
+    Default: RutaExpressPass123!
+    NoEcho: true
+
+  RabbitUser:
+    Type: String
+    Default: admin
+    Description: Usuario de RabbitMQ (el mismo que usa notify)
+
+  RabbitPass:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    AllowedPattern: '[A-Za-z0-9]+'
+    ConstraintDescription: Solo letras y numeros, minimo 8 caracteres
+    Description: Clave de RabbitMQ (solo letras y numeros)
+
+  ErlangCookie:
+    Type: String
+    Default: cookieclusterrutaexpress
+    AllowedPattern: '[A-Za-z0-9]+'
+    Description: Secreto compartido por los dos nodos del cluster
+
+  AdminCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: IP que puede entrar por SSH y al panel web de RabbitMQ (idealmente tu IP publica /32)
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+
+  #################################
+  # VPC
+  #################################
+
+  RutaExpressVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: rutaexpress-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: rutaexpress-igw
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref RutaExpressVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  #################################
+  # PUBLIC SUBNETS
+  #################################
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref RutaExpressVPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: rutaexpress-public-a
+        - Key: kubernetes.io/role/elb
+          Value: "1"
+        - Key: kubernetes.io/cluster/rutaexpress
+          Value: "shared"
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref RutaExpressVPC
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: rutaexpress-public-b
+        - Key: kubernetes.io/role/elb
+          Value: "1"
+        - Key: kubernetes.io/cluster/rutaexpress
+          Value: "shared"
+
+  #################################
+  # PRIVATE SUBNETS
+  #################################
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref RutaExpressVPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: 10.0.11.0/24
+      Tags:
+        - Key: Name
+          Value: rutaexpress-private-a
+        - Key: kubernetes.io/role/internal-elb
+          Value: "1"
+        - Key: kubernetes.io/cluster/rutaexpress
+          Value: "shared"
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref RutaExpressVPC
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: 10.0.12.0/24
+      Tags:
+        - Key: Name
+          Value: rutaexpress-private-b
+        - Key: kubernetes.io/role/internal-elb
+          Value: "1"
+        - Key: kubernetes.io/cluster/rutaexpress
+          Value: "shared"
+
+  #################################
+  # ROUTING
+  #################################
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref RutaExpressVPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  NatEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnetA
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref RutaExpressVPC
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
+  #################################
+  # SECURITY GROUPS
+  #################################
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS PostgreSQL access
+      VpcId: !Ref RutaExpressVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.0.0.0/16
+
+  #################################
+  # RDS SUBNET GROUP
+  #################################
+
+  RDSSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: RutaExpress RDS Subnet Group
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+
+  #################################
+  # RDS POSTGRESQL (temporal - se migra a Oracle despues)
+  #################################
+
+  RDSCatalog:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    Properties:
+      DBInstanceIdentifier: rutaexpress-catalog-db
+      DBInstanceClass: db.t3.micro
+      Engine: postgres
+      EngineVersion: "16"
+      MasterUsername: rutaexpress_admin
+      MasterUserPassword: !Ref DBPassword
+      DBName: catalog_db
+      AllocatedStorage: "20"
+      StorageType: gp2
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      DBSubnetGroupName: !Ref RDSSubnetGroup
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 0
+      MultiAZ: false
+
+  RDSShipments:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    Properties:
+      DBInstanceIdentifier: rutaexpress-shipments-db
+      DBInstanceClass: db.t3.micro
+      Engine: postgres
+      EngineVersion: "16"
+      MasterUsername: rutaexpress_admin
+      MasterUserPassword: !Ref DBPassword
+      DBName: shipments_db
+      AllocatedStorage: "20"
+      StorageType: gp2
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      DBSubnetGroupName: !Ref RDSSubnetGroup
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 0
+      MultiAZ: false
+
+  #################################
+  # ECR REPOSITORIES
+  #################################
+
+  ECRCatalog:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: rutaexpress-catalog
+
+  ECRShipments:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: rutaexpress-shipments
+
+  ECRBff:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: rutaexpress-bff
+
+  #################################
+  # EKS CLUSTER
+  #################################
+
+  EKSCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: rutaexpress
+      Version: "1.35"
+      RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${EksClusterRoleName}'
+      ResourcesVpcConfig:
+        EndpointPrivateAccess: true
+        EndpointPublicAccess: true
+        SubnetIds:
+          - !Ref PublicSubnetA
+          - !Ref PublicSubnetB
+          - !Ref PrivateSubnetA
+          - !Ref PrivateSubnetB
+
+  EKSNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    DependsOn:
+      - EKSCluster
+    Properties:
+      ClusterName: !Ref EKSCluster
+      NodegroupName: rutaexpress-nodegroup
+      NodeRole: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${EksNodeRoleName}'
+      CapacityType: ON_DEMAND
+      InstanceTypes:
+        - t3.medium
+      AmiType: AL2023_x86_64_STANDARD
+      DiskSize: 20
+      ScalingConfig:
+        MinSize: 2
+        DesiredSize: 2
+        MaxSize: 3
+      Subnets:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+
+  #################################
+  # EKS ADDONS
+  #################################
+
+  VpcCniAddon:
+    Type: AWS::EKS::Addon
+    DependsOn:
+      - EKSNodeGroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      AddonName: vpc-cni
+
+  CoreDnsAddon:
+    Type: AWS::EKS::Addon
+    DependsOn:
+      - EKSNodeGroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      AddonName: coredns
+
+  KubeProxyAddon:
+    Type: AWS::EKS::Addon
+    DependsOn:
+      - EKSNodeGroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      AddonName: kube-proxy
+
+  PodIdentityAddon:
+    Type: AWS::EKS::Addon
+    DependsOn:
+      - EKSNodeGroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      AddonName: eks-pod-identity-agent
+
+  #################################
+  # ECR ADICIONALES (notify y frontend)
+  #################################
+
+  ECRNotify:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: rutaexpress-notify
+
+  ECRFrontend:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: rutaexpress-frontend
+
+  #################################
+  # RABBITMQ EN EC2 (docker compose, cluster de 2 nodos)
+  #################################
+
+  RabbitSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RabbitMQ - AMQP desde la VPC, panel y SSH desde AdminCidr
+      VpcId: !Ref RutaExpressVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AdminCidr
+        - IpProtocol: tcp
+          FromPort: 5672
+          ToPort: 5673
+          CidrIp: 10.0.0.0/16
+        - IpProtocol: tcp
+          FromPort: 15672
+          ToPort: 15673
+          CidrIp: !Ref AdminCidr
+
+  RabbitInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.medium
+      ImageId: !Ref LatestAmiId
+      SubnetId: !Ref PublicSubnetA
+      SecurityGroupIds:
+        - !Ref RabbitSecurityGroup
+      Tags:
+        - Key: Name
+          Value: rutaexpress-rabbitmq
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          dnf install -y docker
+          systemctl enable --now docker
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+          mkdir -p /opt/rabbitmq
+          cat > /opt/rabbitmq/cluster.conf <<'EOF'
+          cluster_formation.peer_discovery_backend = classic_config
+          cluster_formation.classic_config.nodes.1 = rabbit@rabbit1
+          cluster_formation.classic_config.nodes.2 = rabbit@rabbit2
+          EOF
+          cat > /opt/rabbitmq/docker-compose.yml <<'EOF'
+          services:
+            rabbit1:
+              image: rabbitmq:management
+              container_name: rabbit1
+              hostname: rabbit1
+              restart: unless-stopped
+              environment:
+                RABBITMQ_ERLANG_COOKIE: ${ErlangCookie}
+                RABBITMQ_DEFAULT_USER: ${RabbitUser}
+                RABBITMQ_DEFAULT_PASS: ${RabbitPass}
+              ports:
+                - "5672:5672"
+                - "15672:15672"
+              volumes:
+                - ./cluster.conf:/etc/rabbitmq/conf.d/20-cluster.conf:ro
+                - rabbit1_data:/var/lib/rabbitmq
+              healthcheck:
+                test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+                interval: 10s
+                timeout: 10s
+                retries: 12
+                start_period: 20s
+              networks:
+                - rabbit-net
+            rabbit2:
+              image: rabbitmq:management
+              container_name: rabbit2
+              hostname: rabbit2
+              restart: unless-stopped
+              environment:
+                RABBITMQ_ERLANG_COOKIE: ${ErlangCookie}
+                RABBITMQ_DEFAULT_USER: ${RabbitUser}
+                RABBITMQ_DEFAULT_PASS: ${RabbitPass}
+              ports:
+                - "5673:5672"
+                - "15673:15672"
+              volumes:
+                - ./cluster.conf:/etc/rabbitmq/conf.d/20-cluster.conf:ro
+                - rabbit2_data:/var/lib/rabbitmq
+              depends_on:
+                rabbit1:
+                  condition: service_healthy
+              networks:
+                - rabbit-net
+          volumes:
+            rabbit1_data:
+            rabbit2_data:
+          networks:
+            rabbit-net:
+          EOF
+          cd /opt/rabbitmq && docker compose up -d
+
+Outputs:
+
+  ClusterName:
+    Description: EKS Cluster Name
+    Value: !Ref EKSCluster
+
+  ECRBase:
+    Description: Base URL para ECR
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'
+
+  RDSCatalogEndpoint:
+    Description: Endpoint de la BD de catalog
+    Value: !GetAtt RDSCatalog.Endpoint.Address
+
+  RDSShipmentsEndpoint:
+    Description: Endpoint de la BD de shipments
+    Value: !GetAtt RDSShipments.Endpoint.Address
+
+  RabbitPrivateIp:
+    Description: IP privada de RabbitMQ (va en RABBITMQ_ADDRESSES de k8s/secrets.yaml)
+    Value: !GetAtt RabbitInstance.PrivateIp
+
+  RabbitPublicIp:
+    Description: IP publica de la EC2 de RabbitMQ
+    Value: !GetAtt RabbitInstance.PublicIp
+
+  RabbitPanelUrl:
+    Description: Panel web de RabbitMQ (nodo 1)
+    Value: !Sub 'http://${RabbitInstance.PublicIp}:15672'

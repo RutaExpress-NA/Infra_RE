@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rutaexpress-frontend
+  namespace: rutaexpress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rutaexpress-frontend
+  template:
+    metadata:
+      labels:
+        app: rutaexpress-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: 485970811285.dkr.ecr.us-east-1.amazonaws.com/rutaexpress-frontend:v1
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rutaexpress-frontend
+  namespace: rutaexpress
+spec:
+  selector:
+    app: rutaexpress-frontend
+  ports:
+    - port: 80
+      targetPort: 80
+  type: LoadBalancer

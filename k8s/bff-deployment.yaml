@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rutaexpress-bff
+  namespace: rutaexpress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rutaexpress-bff
+  template:
+    metadata:
+      labels:
+        app: rutaexpress-bff
+    spec:
+      containers:
+        - name: bff
+          image: 485970811285.dkr.ecr.us-east-1.amazonaws.com/rutaexpress-bff:v1
+          ports:
+            - containerPort: 8081
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: ""
+            - name: AZURE_TENANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: rutaexpress-secrets
+                  key: AZURE_TENANT_ID
+            - name: AZURE_BACKEND_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: rutaexpress-secrets
+                  key: AZURE_BACKEND_CLIENT_ID
+            - name: CATALOG_SERVICE_URL
+              value: "http://rutaexpress-catalog:8083"
+            - name: SHIPMENTS_SERVICE_URL
+              value: "http://rutaexpress-shipments:8082"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rutaexpress-bff
+  namespace: rutaexpress
+spec:
+  selector:
+    app: rutaexpress-bff
+  ports:
+    - port: 80
+      targetPort: 8081
+  type: LoadBalancer
